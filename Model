@@ -1,0 +1,163 @@
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import tensorflow as tf
+from tensorflow.keras.models import Model, Sequential
+from tensorflow.keras.layers import Dense, Dropout, Flatten, Conv2D, MaxPooling2D, GlobalAveragePooling2D
+from tensorflow.keras.preprocessing.image import ImageDataGenerator
+from tensorflow.keras.applications import ResNet50
+from tensorflow.keras.applications.resnet50 import preprocess_input
+from tensorflow.keras.optimizers import Adam
+from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint
+from sklearn.svm import SVC
+from sklearn.preprocessing import LabelEncoder
+from sklearn.metrics import accuracy_score
+import os
+import zipfile
+from google.colab import files, drive
+
+# Mount Google Drive
+drive.mount('/content/drive')
+
+# Create a project folder
+!mkdir -p medicinal_plants
+
+# Upload dataset
+uploaded_files = files.upload()
+dataset_zip = list(uploaded_files.keys())[0]
+
+# Extract dataset
+with zipfile.ZipFile(dataset_zip, 'r') as zip_ref:
+    zip_ref.extractall('medicinal_plants')
+
+# Define dataset paths
+base_dir = 'medicinal_plants'
+train_dir = os.path.join(base_dir, 'train')
+validation_dir = os.path.join(base_dir, 'validation')
+
+# Check if dataset exists
+if not os.path.exists(train_dir) or not os.path.exists(validation_dir):
+    print("Error: Train or Validation directory not found!")
+else:
+    print("Dataset directories found!")
+
+# Data Augmentation
+train_datagen = ImageDataGenerator(preprocessing_function=preprocess_input,
+                                   rotation_range=40, width_shift_range=0.2,
+                                   height_shift_range=0.2, shear_range=0.2,
+                                   zoom_range=0.2, horizontal_flip=True, fill_mode='nearest')
+validation_datagen = ImageDataGenerator(preprocessing_function=preprocess_input)
+
+# Create Data Generators
+batch_size = 32
+target_size = (224, 224)
+train_generator = train_datagen.flow_from_directory(train_dir, target_size=target_size, batch_size=batch_size, class_mode='categorical')
+validation_generator = validation_datagen.flow_from_directory(validation_dir, target_size=target_size, batch_size=batch_size, class_mode='categorical')
+
+# Get class mapping
+num_classes = len(train_generator.class_indices)
+print(f"Number of classes: {num_classes}")
+print("Class mapping:", train_generator.class_indices)
+
+# Load ResNet50 as Feature Extractor
+base_model = ResNet50(weights='imagenet', include_top=False, input_shape=(224, 224, 3))
+for layer in base_model.layers:
+    layer.trainable = False  # Freeze base model layers
+
+# Add Custom CNN Layers
+cnn_model = Sequential([
+    base_model,
+    GlobalAveragePooling2D(),
+    Dense(1024, activation='relu'),
+    Dropout(0.5),
+    Dense(512, activation='relu'),
+    Dropout(0.3),
+    Dense(num_classes, activation='softmax')
+])
+
+# Compile CNN Model
+cnn_model.compile(optimizer=Adam(learning_rate=0.0001),
+                  loss='categorical_crossentropy',
+                  metrics=['accuracy'])
+cnn_model.summary()
+
+# Train CNN Model
+callbacks = [EarlyStopping(patience=5, restore_best_weights=True),
+             ModelCheckpoint(filepath='/content/drive/MyDrive/hybrid_medicinal_model.h5', save_best_only=True)]
+
+history = cnn_model.fit(train_generator, epochs=20, validation_data=validation_generator, callbacks=callbacks)
+
+# Save CNN Model
+cnn_model.save('hybrid_medicinal_model.h5')
+files.download('hybrid_medicinal_model.h5')
+
+# Extract Features for SVM Training
+def extract_features(generator, model):
+    features, labels = [], []
+    for batch_x, batch_y in generator:
+        batch_features = model.predict(batch_x)
+        features.extend(batch_features)
+        labels.extend(np.argmax(batch_y, axis=1))
+        if len(features) >= generator.samples:
+            break
+    return np.array(features), np.array(labels)
+
+feature_extractor = Model(inputs=cnn_model.input, outputs=cnn_model.layers[-3].output)
+X_train, y_train = extract_features(train_generator, feature_extractor)
+X_val, y_val = extract_features(validation_generator, feature_extractor)
+
+# Encode Labels
+label_encoder = LabelEncoder()
+y_train_encoded = label_encoder.fit_transform(y_train)
+y_val_encoded = label_encoder.transform(y_val)
+
+# Train SVM Classifier
+svm_model = SVC(kernel='linear', probability=True)
+svm_model.fit(X_train, y_train_encoded)
+svm_accuracy = accuracy_score(y_val_encoded, svm_model.predict(X_val))
+print(f"SVM Validation Accuracy: {svm_accuracy:.2f}")
+
+# Save SVM Model
+import joblib
+joblib.dump(svm_model, '/content/drive/MyDrive/svm_medicinal_model.pkl')
+
+# Hybrid Prediction
+
+def hybrid_predict(image_path):
+    from tensorflow.keras.preprocessing import image
+    img = image.load_img(image_path, target_size=(224, 224))
+    img_array = image.img_to_array(img)
+    img_array = np.expand_dims(img_array, axis=0)
+    img_array = preprocess_input(img_array)
+    
+    # CNN Prediction
+    cnn_pred = cnn_model.predict(img_array)
+    cnn_class = np.argmax(cnn_pred[0])
+    
+    # Extract Features for SVM
+    features = feature_extractor.predict(img_array)
+    svm_pred = svm_model.predict_proba(features)[0]
+    
+    # Weighted Combination of CNN & SVM
+    hybrid_pred = (0.6 * cnn_pred[0]) + (0.4 * svm_pred)
+    hybrid_class = np.argmax(hybrid_pred)
+    
+    # Get Class Names
+    class_names = list(train_generator.class_indices.keys())
+    
+    plt.imshow(img)
+    plt.title(f"Predicted: {class_names[hybrid_class]}")
+    plt.axis('off')
+    plt.show()
+    
+    print("\nTop 3 predictions:")
+    top_3_indices = np.argsort(hybrid_pred)[-3:][::-1]
+    for i, idx in enumerate(top_3_indices):
+        print(f"{i+1}. {class_names[idx]} - {hybrid_pred[idx]:.2f}")
+
+# Upload test image
+uploaded_test = files.upload()
+test_image_path = list(uploaded_test.keys())[0]
+
+# Run Hybrid Prediction
+hybrid_predict(test_image_path)
