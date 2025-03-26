@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Identify Plant</title>
+    <link rel="stylesheet" href="capstone.css">
+</head>
+<body>
+
+    <header>
+        <h1>Identify Your Plant</h1>
+        <nav>
+            <ul>
+                <li><a href="first.html">Home</a></li>
+                <li><a href="about.html">About</a></li>
+                <li><a href="identify.html" class="active">Identify Plant</a></li>
+            </ul>
+        </nav>
+    </header>
+
+    <section class="upload-section">
+        <h2>Upload an Image</h2>
+        <input type="file" id="plantImage" accept="image/*" onchange="previewImage(event)">
+        <div id="imagePreview"></div>
+        <button onclick="identifyPlant()">🧠 Identify Plant</button>
+    </section>
+
+    <section id="plantDetails" class="plant-info">
+        <!-- Identified plant details will be displayed here -->
+    </section>
+
+    <script src="script.js"></script>
+</body>
+</html>
